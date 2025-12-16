@@ -3,12 +3,12 @@ import pandas as pd
 import requests
 import io
 import zipfile
-from PIL import Image
+from PIL import Image, ImageFilter
 
 # --- 1. Set up the Web Page Layout ---
 st.set_page_config(page_title="Team Photo Downloader", page_icon="📸")
-st.title("📸 Bulk Photo Downloader (with Auto-Upscale)")
-st.write("Upload an Excel/CSV file. Images smaller than 1000px will be enlarged automatically.")
+st.title("📸 Bulk Photo Downloader (High-Quality Upscale)")
+st.write("Upload an Excel/CSV file. Images smaller than 1000px will be sharpened and enlarged.")
 
 # --- 2. User Inputs ---
 uploaded_file = st.file_uploader("Choose your Excel or CSV file", type=['csv', 'xlsx', 'xlsm', 'xlsb'])
@@ -30,39 +30,46 @@ def load_dataframe(file):
 
 def process_image(image_bytes):
     """
-    Opens image bytes, checks size, and upscales if necessary.
-    Returns bytes of the processed image.
+    Opens image bytes, checks size, upscales using Lanczos, applies sharpening, 
+    and saves with max quality settings.
     """
     try:
         img = Image.open(io.BytesIO(image_bytes))
         
-        # Convert to RGB if it's RGBA (transparency) to avoid issues saving as JPEG
+        # Convert to RGB to handle transparency/PNGs correctly for JPEG conversion
         if img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
 
         width, height = img.size
         min_dimension = 1000
 
-        # Check if either side is smaller than the target
+        # Check if resizing is needed
         if width < min_dimension or height < min_dimension:
-            # logic: We want the *smallest* side to be at least 1000.
-            # This ensures both sides meet the criteria without distortion.
+            # Calculate scale factor to make the SMALLEST side at least 1000
             scale_factor = min_dimension / min(width, height)
             
             new_width = int(width * scale_factor)
             new_height = int(height * scale_factor)
             
-            # LANCZOS is the best filter for upscaling images (high quality)
+            # 1. Resize using LANCZOS (Highest Quality Downsampling/Upsampling filter)
             img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            
+            # 2. Apply Sharpening to combat the blur from upscaling
+            # Radius=2, Percent=150 is a good starting point for upscaled web images
+            img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150))
         
         # Save back to bytes
         output_buffer = io.BytesIO()
-        # Save as JPEG with high quality (95)
-        img.save(output_buffer, format="JPEG", quality=95)
+        
+        # 3. Save with Maximum Quality Settings
+        # quality=100: Minimal compression
+        # subsampling=0: Keeps all color information (4:4:4)
+        img.save(output_buffer, format="JPEG", quality=100, subsampling=0)
+        
         return output_buffer.getvalue()
 
     except Exception as e:
-        # If image processing fails (e.g., corrupt file), return original bytes
+        # If processing fails, return original bytes as fallback
         return image_bytes
 
 if st.button("Start Download"):
@@ -102,13 +109,10 @@ if st.button("Start Download"):
                             response = requests.get(url, timeout=10)
                             response.raise_for_status()
                             
-                            # --- NEW STEP: Process/Resize Image ---
+                            # Process the image (Upscale + Sharpen)
                             final_image_data = process_image(response.content)
 
-                            # Determine Filename
-                            filename = f"image_{i+1:03d}.jpg" 
-                            
-                            # Write to Zip
+                            filename = f"image_{i+1:03d}.jpg"
                             zf.writestr(filename, final_image_data)
                             valid_count += 1
                             
@@ -125,6 +129,6 @@ if st.button("Start Download"):
                 st.download_button(
                     label="Download ZIP File",
                     data=zip_buffer,
-                    file_name="processed_photos.zip",
+                    file_name="enhanced_photos.zip",
                     mime="application/zip"
                 )
